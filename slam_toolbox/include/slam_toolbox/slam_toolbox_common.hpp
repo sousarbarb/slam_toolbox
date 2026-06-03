@@ -46,11 +46,36 @@
 #include <boost/thread.hpp>
 #include <sys/resource.h>
 
+#include <Eigen/Geometry>
+
 namespace slam_toolbox
 {
 
 // dirty, dirty cheat I love
 using namespace ::toolbox_types;
+
+/**
+ * @brief compute the 3D quaternion representation from an angle (yaw)
+ *
+ * yaw = rotation around z-axis
+ * q_yaw = cos( th_yaw / 2 ) + k * sin( th_yaw / 2 )
+ *
+ * Source:
+ * https://www.euclideanspace.com/maths/geometry/rotations/conversions/eulerToQuaternion/index.htm
+ *
+ * @tparam Scalar_ derived type (float, double)
+ * @param[in] a angle (rad)
+ * @return Quaternion_<Scalar_> 3D quaternion
+ */
+template <typename Scalar_>
+inline Eigen::Quaternion<Scalar_> a2q(const Scalar_& a)
+{
+  Scalar_ yaw_2 = Scalar_(a) * Scalar_(0.5);
+  Scalar_ c = cos(yaw_2);
+  Scalar_ s = sin(yaw_2);
+
+  return Eigen::Quaternion<Scalar_>(c, Scalar_(0.0), Scalar_(0.0), s);
+}
 
 class SlamToolbox
 {
@@ -146,6 +171,8 @@ protected:
   // pluginlib
   pluginlib::ClassLoader<karto::ScanSolver> solver_loader_;
   boost::shared_ptr<karto::ScanSolver> solver_;
+
+  std::ofstream log_file_pose_;
 };
 
 } // end namespace

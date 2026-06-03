@@ -19,6 +19,8 @@
 
 #include "slam_toolbox/slam_toolbox_sync.hpp"
 
+#include <limits>
+
 namespace slam_toolbox
 {
 
@@ -100,6 +102,32 @@ void SynchronousSlamToolbox::laserCallback(
   {
     boost::mutex::scoped_lock lock(q_mutex_);
     q_.push(PosedScan(scan, pose));
+  }
+
+  // --- pose-graph size diagnostic ---
+  {
+    boost::mutex::scoped_lock lock(smapper_mutex_);
+    karto::Mapper * mapper = smapper_->getMapper();
+    if (mapper && mapper->GetGraph()) {
+      const auto & vmap = mapper->GetGraph()->GetVertices();
+      size_t n_nodes = 0;
+      for (const auto & kv : vmap) {
+        n_nodes += kv.second.size();
+      }
+      const size_t n_edges = mapper->GetGraph()->GetEdges().size();
+
+      // static size_t last_nodes = std::numeric_limits<size_t>::max();
+      // static size_t last_edges = std::numeric_limits<size_t>::max();
+
+      // if (n_nodes != last_nodes || n_edges != last_edges) {
+
+        ROS_INFO("Pose graph: %zu nodes, %zu edges (scan t=%.3f)",
+                 n_nodes, n_edges, scan->header.stamp.toSec());
+
+        // last_nodes = n_nodes;
+        // last_edges = n_edges;
+      // }
+    }
   }
 
   return;

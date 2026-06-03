@@ -21,8 +21,63 @@
 #include "slam_toolbox/slam_toolbox_common.hpp"
 #include "slam_toolbox/serialization.hpp"
 
+#include <filesystem>
+
 namespace slam_toolbox
 {
+
+void validateAndCreatePath(const std::string& file_path)
+{
+  try
+  {
+    std::filesystem::path path(file_path);
+    std::filesystem::path directory = path.parent_path();
+    std::filesystem::path curr_directory = std::filesystem::current_path();
+
+    if (directory.empty())
+    {
+      return;
+    }
+
+    if (std::filesystem::exists(directory))
+    {
+      if (std::filesystem::is_directory(directory))
+      {
+        return;
+      }
+      else
+      {
+        throw std::runtime_error("validateAndCreatePath | Path (" +
+                                 directory.string() +
+                                 ") exists but is not a directory");
+      }
+    }
+    else
+    {
+      if (std::filesystem::create_directories(directory))
+      {
+        return;
+      }
+      else
+      {
+        throw std::runtime_error(
+            "validateAndCreatePath | Failed to create directory (" +
+            directory.string() + ")");
+      }
+    }
+  }
+  catch (const std::filesystem::filesystem_error& e)
+  {
+    throw std::runtime_error("validateAndCreatePath | Error resolving path (" +
+                             file_path + "): " + e.what());
+  }
+  catch (const std::exception& e)
+  {
+    throw std::runtime_error(
+        "validateAndCreatePath | Error when processing path (" + file_path +
+        "): " + e.what());
+  }
+}
 
 /*****************************************************************************/
 SlamToolbox::SlamToolbox(ros::NodeHandle& nh)
@@ -52,6 +107,67 @@ SlamToolbox::SlamToolbox(ros::NodeHandle& nh)
 
   reprocessing_transform_.setIdentity();
 
+  std::string log_filename;
+
+  nh.param("log_filename", log_filename, std::string(""));
+
+  if (!log_filename.empty())
+  {
+    std::string log_file_pose;
+
+    try
+    {
+      std::filesystem::path log_file_path(log_filename);
+
+      std::filesystem::path dir = log_file_path.parent_path();
+      std::string stem = log_file_path.stem().string();
+      std::string ext = log_file_path.extension().string();
+
+      log_file_pose = (dir / (stem + "_slam_toolbox" + ext)).string();
+
+      ROS_INFO("[%s] log file  : %s",
+               ros::this_node::getName().c_str(), log_file_pose.c_str());
+    }
+    catch (const std::filesystem::filesystem_error& e)
+    {
+      throw std::runtime_error(
+          "SlamToolbox::SlamToolbox | "
+          "Error resolving paths for log files");
+    }
+    catch (const std::exception& e)
+    {
+      throw std::runtime_error(
+          "SlamToolbox::SlamToolbox | "
+          "Error when processing paths for log files");
+    }
+    catch (...)
+    {
+      throw std::runtime_error(
+          "SlamToolbox::SlamToolbox | "
+          "Unknown error when processing paths for log files");
+    }
+
+    validateAndCreatePath(log_file_pose);
+
+    try
+    {
+      log_file_pose_ = std::ofstream(log_file_pose);
+
+      if (!log_file_pose_.is_open())
+      {
+        throw std::runtime_error("SlamToolbox::SlamToolbox "
+                                "| file (" + log_file_pose +
+                                ") for pose data not opened");
+      }
+    }
+    catch (const std::exception& e)
+    {
+      throw std::runtime_error(
+          "SlamToolbox::SlamToolbox | error when opening "
+          "the log file ( " + log_file_pose + " ): " + e.what());
+    }
+  }
+
   double transform_publish_period;
   nh_.param("transform_publish_period", transform_publish_period, 0.05);
   threads_.push_back(std::make_unique<boost::thread>(
@@ -68,6 +184,11 @@ SlamToolbox::~SlamToolbox()
   for (int i=0; i != threads_.size(); i++)
   {
     threads_[i]->join();
+  }
+
+  if (log_file_pose_.is_open())
+  {
+    log_file_pose_.close();
   }
 
   smapper_.reset();
@@ -523,6 +644,29 @@ karto::LocalizedRangeScan* SlamToolbox::addScan(
     exit(-1);
   }
 
+  const karto::Pose2& corrected_pose = range_scan->GetCorrectedPose();
+
+  if (log_file_pose_.is_open())
+  {
+    Eigen::Quaterniond pose_q(a2q(corrected_pose.GetHeading()));
+
+    try
+    {
+      log_file_pose_ << std::fixed << std::setprecision(9)
+                      << scan->header.stamp.toSec() << " "
+                      << corrected_pose.GetX() << " "
+                      << corrected_pose.GetY() << " " << 0 << " "
+                      << pose_q.x() << " " << pose_q.y() << " " << pose_q.z()
+                      << " " << pose_q.w() << std::endl;
+    }
+    catch (const std::exception& e)
+    {
+      throw std::runtime_error(
+          "SlamToolbox::addScan | error when logging the robot data (" +
+          std::string(e.what()) + ")");
+    }
+  }
+
   // if successfully processed, create odom to map transformation
   // and add our scan to storage
   if(processed)
@@ -532,10 +676,10 @@ karto::LocalizedRangeScan* SlamToolbox::addScan(
       scan_holder_->addScan(*scan);
     }
 
-    setTransformFromPoses(range_scan->GetCorrectedPose(), karto_pose,
+    setTransformFromPoses(corrected_pose, karto_pose,
       scan->header.stamp, update_reprocessing_transform);
     dataset_->Add(range_scan);
-    publishPose(range_scan->GetCorrectedPose(), covariance, scan->header.stamp);
+    publishPose(corrected_pose, covariance, scan->header.stamp);
   }
   else
   {
